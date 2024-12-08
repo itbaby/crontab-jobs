@@ -1,21 +1,60 @@
-# crontab-jobs
-a program is able to run as crontab and process the new files that are not yet handled before.
+# Crontab Jobs
 
-1, use Node.Js to do parser and store pg operation, all pg connection security will be configed in config.ini file.
+A Node.js application that monitors directories and processes new files automatically using crontab scheduling.
 
-2, use pino do logger, per day and log any success and failed rec.
+## Features
 
-3, will use PM2 to handle stable thread in Linux env
+- **File Processing**: Automatically detects and processes new files in configured directories
+- **Database Integration**: Stores processing results in PostgreSQL database
+- **Configurable**: Easy configuration through `config.ini` file without code changes
+- **Logging**: Daily logging with [Pino](https://github.com/pinojs/pino) for both successful and failed operations
+- **Process Management**: Uses [PM2](https://pm2.keymetrics.io/) for stable process management in Linux environments
+- **Flexible Scheduling**: Customizable cron schedules through configuration
 
-4, will use crob function , that can be configed with simple config.ini file
+## Configuration
 
+All settings are managed through `config.ini` file:
 
-any new coming changes, you don't need to change codes, just update the config.ini is enough.
+### Required Configuration Parameters
 
-the config.ini will includes
+1. **Directory Settings**
+   - Watch directory paths
 
-1,the path for director
+2. **Database Connection**
+   - Host address
+   - Database name
+   - Table name
+   - Username
+   - Password
 
-2, db connection info , include address, table, username, passwd etc...
+3. **Cron Schedule**
+   - Customizable schedule timing based on your requirements
 
-3, corb you can change the scedule base on your needs. 
+## Installation
+
+```bash
+npm install
+```
+
+## Usage
+
+1. Configure your settings in `config.ini`
+2. Start the application:
+   ```bash
+   pm2 start app.js
+   ```
+
+## Logging
+
+Logs are generated daily and include:
+- Success records
+- Failed operations
+- Processing status
+
+## Contributing
+
+Feel free to submit issues and pull requests.
+
+## License
+
+[FYI](LICENSE)
