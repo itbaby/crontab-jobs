@@ -1,4 +1,3 @@
-// External dependencies
 import { createReadStream, readFileSync } from "node:fs";
 import pino from "pino";
 import walk from "walk";
@@ -7,7 +6,6 @@ import { everySeries } from "async";
 import { parse } from "ini";
 import * as csv from 'fast-csv';
 import { sortBy } from "lodash-es";
-import { DownloaderHelper } from "node-downloader-helper";
 //config and init logger 
 const config = parse(readFileSync("./config.ini", "utf-8"));
 const logger = pino(pino.destination({ dest: './logs', sync: true }));
@@ -23,7 +21,7 @@ let parseCsv2PG = (filePath, callback) => {
   const { name, mtime } = filePath;
   createReadStream(name)
     .pipe(csv.parse({ headers: true }))
-    .on('error', error => console.error(error))
+    .on('error', error => callback(error, null))
     .on('data', row => {
       if (['MAYBE', 'PROBABLY', 'ALMOST_CERTAINLY', 'DEFINITELY'].includes(row['SpamScore'])) {
         chunkRecs.push({
@@ -60,17 +58,3 @@ walker.on("end", () => {
   });
 })
 
-/*
-console.log(config.path.downloadURL);
-
-if (config.path.downloadURL) {
-  const downloader = new DownloaderHelper(config.path.downloadURL, config.path.downloadDir);
-  downloader.on('end', () => {
-    logger.info('Download completed');
-  });
-  downloader.on('error', (err) => {
-
-  })
-  downloader.start();
-}
-*/
