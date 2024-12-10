@@ -73,7 +73,7 @@ let parseCsv2PG = (fn, callback) => {
         }
         await cursordb.update(({ records }) => {
           records[fn] = records[fn] + 1;
-          console.log(`Processing ${fn}  ${rec.number}`);
+          console.log(`Processing ${fn}  ${rec.number} , total ${records[fn]}/${recs.length}`);
         })
       }
     });
