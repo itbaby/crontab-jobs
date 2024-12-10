@@ -1,34 +1,69 @@
 # Crontab Jobs
 
-A Node.js application that monitors directories and processes new files automatically using crontab scheduling.
+A Node.js application that processes CSV files containing spam, fraud, and TCPA data, tracking their occurrences and maintaining historical records in PostgreSQL.
 
 ## Features
 
-- **File Processing**: Automatically detects and processes new files in configured directories
-- **Database Integration**: Stores processing results in PostgreSQL database
-- **Configurable**: Easy configuration through `config.ini` file without code changes
-- **Logging**: Daily logging with [Pino](https://github.com/pinojs/pino) for both successful and failed operations
-- **Process Management**: Uses [PM2](https://pm2.keymetrics.io/) for stable process management in Linux environments
-- **Flexible Scheduling**: Customizable cron schedules through configuration
+- **CSV Processing**: Processes CSV files containing spam scores, fraud probability, and TCPA data
+- **Database Integration**: Uses [postgres](https://github.com/porsager/postgres) for efficient PostgreSQL operations
+- **State Management**: Uses [lowdb](https://github.com/typicode/lowdb) for tracking processed records
+- **Date Processing**: Integrates [date-fns](https://date-fns.org/) for reliable date operations
+- **Data Tracking**: Maintains first and last occurrence dates for spam, fraud, and TCPA events
+- **Incremental Processing**: Supports resuming file processing from last processed record
+
+## Data Processing
+
+The application processes three main types of data:
+1. **Spam Records**: Based on SpamScore categories (MAYBE, PROBABLY, ALMOST_CERTAINLY, DEFINITELY)
+2. **Fraud Records**: Based on FraudProbability
+3. **TCPA Records**: Based on TCPAFraudProbability
+
+For each phone number, it tracks:
+- First and last occurrence dates for each type
+- Count of occurrences for each type
+- Creation date of the first spam record
 
 ## Configuration
 
-All settings are managed through `config.ini` file:
+Settings are managed through `config/config_basic.ini`:
 
-### Required Configuration Parameters
+### Required Configuration
 
-1. **Directory Settings**
-   - Watch directory paths
+1. **Database Connection**
+   ```ini
+   [database]
+   host=your_host
+   port=your_port
+   user=your_user
+   password=your_password
+   database=your_database
+   ```
 
-2. **Database Connection**
-   - Host address
-   - Database name
-   - Table name
-   - Username
-   - Password
+2. **Path Configuration**
+   ```ini
+   [path]
+   watchdir=path_to_csv_files
+   ```
 
-3. **Cron Schedule**
-   - Customizable schedule timing based on your requirements
+## Database Schema
+
+The application uses the following PostgreSQL table structure:
+
+```sql
+CREATE TABLE public.spams (
+    number text PRIMARY KEY,
+    spam_count integer,
+    fraud_count integer,
+    tcpa_count integer,
+    first_spam_on date,
+    last_spam_on date,
+    first_fraud_on date,
+    last_fraud_on date,
+    first_tcpa_on date,
+    last_tcpa_on date,
+    created_on date
+);
+```
 
 ## Installation
 
@@ -36,25 +71,32 @@ All settings are managed through `config.ini` file:
 npm install
 ```
 
+## Dependencies
+
+- postgres
+- lowdb
+- date-fns
+- fast-csv
+- walk
+- lodash-es
+
 ## Usage
 
-1. Configure your settings in `config.ini`
-2. Start the application:
+1. Configure your database and path settings in `config/config_basic.ini`
+2. Run the application:
    ```bash
-   pm2 start app.js
+   node watcher.js
    ```
 
-## Logging
+## State Management
 
-Logs are generated daily and include:
-- Success records
-- Failed operations
-- Processing status
+The application uses `logs.json` to track:
+- Processed files
+- Number of records processed per file
+- Prevents duplicate processing of records
 
-## Contributing
+## Error Handling
 
-Feel free to submit issues and pull requests.
-
-## License
-
-[FYI](LICENSE)
+- Maintains transaction integrity for database operations
+- Logs processing errors with file and record details
+- Supports resuming from last successful record in case of failures
