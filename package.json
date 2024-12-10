@@ -10,15 +10,13 @@
   "license": "ISC",
   "dependencies": {
     "async": "^3.2.6",
+    "date-fns": "^4.1.0",
     "fast-csv": "^5.0.2",
     "ini": "^5.0.0",
-    "knex": "^3.1.0",
     "lodash-es": "^4.17.21",
     "lowdb": "^7.0.1",
     "node-downloader-helper": "^2.1.9",
-    "pg": "^8.13.1",
-    "walk": "^2.3.15",
-    "date-fns": "^4.1.0"
-  },
-  "devDependencies": {}
+    "postgres": "^3.4.5",
+    "walk": "^2.3.15"
+  }
 }

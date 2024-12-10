@@ -1,24 +1,18 @@
 import { join } from "node:path";
 import { createReadStream, readFileSync } from "node:fs";
 import walk from "walk";
-import knex from "knex";
 import { everySeries } from "async";
 import { parse } from "ini";
 import * as csv from 'fast-csv';
+import postgres from 'postgres'
 import { has, takeRight } from "lodash-es";
-import { LowSync } from 'lowdb';
-import { JSONFileSync } from 'lowdb/node'
-import { parse as parseDate, format } from 'date-fns';
-const cursordb = new LowSync(new JSONFileSync(`logs.json`), { records: {} });
+import { Low } from 'lowdb';
+import { JSONFile } from 'lowdb/node'
+import { parse as parseDate, format, compareAsc, compareDesc } from 'date-fns';
+const cursordb = new Low(new JSONFile(`logs.json`), { records: {} });
 const config = parse(readFileSync("./config/config_basic.ini", "utf-8"));
 const { host, port, user, password, database } = config.database;
-let client = knex({
-  client: 'pg',
-  connection: { host, port, user, password, database },
-  pool: { min: 2, max: 10 },
-  acquireConnectionTimeout: 60 * 60 * 1000
-});
-
+const sql = postgres({ host, port, user, password, database });
 
 let parseCsv2PG = (fn, callback) => {
   let recs = [];
@@ -27,46 +21,61 @@ let parseCsv2PG = (fn, callback) => {
     .on('error', error => callback(error, null))
     .on('data', row => {
       let { SpamScore, FraudProbability, TCPAFraudProbability } = row;
-      let rec = { number: row['Number'] }, _date = parseDate(takeRight(fn.split(/[_|\.]/), 2).shift(), `yyyyMMdd`, new Date());
+      let rec = { number: row['Number'], spam_count: 0, fraud_count: 0, tcpa_count: 0 }, _date = format(parseDate(takeRight(fn.split(/[_|\.]/), 2).shift(), `yyyyMMdd`, new Date()), 'yyyy-MM-dd');
       if (FraudProbability > 0) {
         rec.first_fraud_on = _date;
         rec.last_fraud_on = _date;
+        rec.fraud_count = 1;
       }
       if (TCPAFraudProbability > 0) {
         rec.first_tcpa_on = _date;
         rec.last_tcpa_on = _date;
+        rec.tcpa_count = 1;
       }
       if (['MAYBE', 'PROBABLY', 'ALMOST_CERTAINLY', 'DEFINITELY'].includes(SpamScore)) {
         rec.first_spam_on = _date;
         rec.last_spam_on = _date;
+        rec.spam_count = 1;
+        rec.created_on = _date;
         recs.push(rec)
       }
     })
     .on('end', async rs => {
-      cursordb.read();
+      await cursordb.read();
       let _rec = cursordb.data.records;
       if (has(_rec, fn) && _rec[fn] === rs) { callback(null, `${fn}:${rs}`); return; }
-      cursordb.update(({ records }) => { if (!has(records, fn)) { records[fn] = 0; } });
+      await cursordb.update(({ records }) => { if (!has(records, fn)) { records[fn] = 0; } });
       console.log('Cointue to pocesse', fn);
-      await client.transaction(async (trx) => {
-        try {
-          recs.map(async rec => {
-
-            let record = await trx('public.spams').where({ number: rec.number });
-            console.log(record)
-            console.log('>>')
-          })
-          //
-          // await trx.batchInsert('public.spams', recs, 100)
-          await trx.commit();
-          cursordb.update(({ records }) => { records[fn] = recs.length; })
-          callback(null, `${fn}:${recs.length}`);
-        } catch (err) {
-          cursordb.update(({ records }) => { records[fn] = 0; })
-          await trx.rollback();
-          callback(null, `${fn}:0`);
+      let processed = 0;
+      for (const rec of recs) {
+        if (_rec[fn] > 0 && processed++ < _rec[fn]) {
+          console.log(`skip ${fn} ${rec.number}`);
+          continue;
         }
-      })
+        const olds = await sql`select * from public.spams where number = ${rec.number}`;
+        if (olds.length == 0) {
+          await sql` insert into public.spams ${sql(rec)} `;
+        } else {
+          let o = olds[0];
+          const updater = {
+            number: rec.number,
+            spam_count: o.spam_count + 1,
+            first_spam_on: format([o.first_spam_on, rec.first_spam_on].sort(compareAsc)[0], 'yyyy-MM-dd'),
+            last_spam_on: format([o.last_spam_on, rec.last_spam_on].sort(compareDesc)[0], 'yyyy-MM-dd'),
+            first_fraud_on: format([o.first_fraud_on, rec.first_fraud_on].sort(compareAsc)[0], 'yyyy-MM-dd'),
+            last_fraud_on: format([o.last_fraud_on, rec.last_fraud_on].sort(compareDesc)[0], 'yyyy-MM-dd'),
+            first_tcpa_on: format([o.first_tcpa_on, rec.first_tcpa_on].sort(compareAsc)[0], 'yyyy-MM-dd'),
+            last_tcpa_on: format([o.last_tcpa_on, rec.last_tcpa_on].sort(compareDesc)[0], 'yyyy-MM-dd'),
+            fraud_count: o.fraud_count + rec.fraud_count,
+            tcpa_count: o.tcpa_count + rec.tcpa_count
+          }
+          await sql` update public.spams set ${sql(updater)}  where number = ${updater.number}`;
+        }
+        await cursordb.update(({ records }) => {
+          records[fn] = records[fn] + 1;
+          console.log(`Processing ${fn}  ${rec.number}`);
+        })
+      }
     });
 }
 
