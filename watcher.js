@@ -21,6 +21,7 @@ let parseCsv2PG = (fn, callback) => {
     .on('error', error => callback(error, null))
     .on('data', row => {
       let { SpamScore, FraudProbability, TCPAFraudProbability } = row;
+
       let rec = { number: row['Number'], spam_count: 0, fraud_count: 0, tcpa_count: 0 }, _date = format(parseDate(takeRight(fn.split(/[_|\.]/), 2).shift(), `yyyyMMdd`, new Date()), 'yyyy-MM-dd');
       if (FraudProbability > 0) {
         rec.first_fraud_on = _date;
@@ -76,6 +77,7 @@ let parseCsv2PG = (fn, callback) => {
           console.log(`Processing ${fn}  ${rec.number} , total ${records[fn]}/${recs.length}`);
         })
       }
+      callback(null, `${fn}:${rs}`);
     });
 }
 
