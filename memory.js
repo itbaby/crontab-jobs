@@ -6,30 +6,67 @@ import { mapLimit } from "async";
 import { parse } from "ini";
 import * as csv from 'fast-csv';
 import postgres from 'postgres'
-import { has, unset } from "lodash-es";
+import { has, unset, find } from "lodash-es";
 import { Low, Memory } from 'lowdb';
-import { JSONFile } from 'lowdb/node'
+import { JSONFile } from 'lowdb/node';
+import { pool } from 'workerpool';
 import { parse as parseDate, format } from 'date-fns';
+const logs = new Low(new JSONFile(`logs.json`), { records: {} });
+
+const worker = pool();
 
 const emitter = mitt();
 const config = parse(readFileSync("./config/config_basic.ini", "utf-8"));
 const { host, port, user, password, database } = config.database;
 
-const cursor = new Low(new JSONFile(`logs.json`), { records: {} });
+function calculate(rows, fn, rs, logs) {
+  let arr = {};
+  for (let row of rows) {
+    let opt = arr[row.number];
+    if (opt) {
+      opt.fraud_count = opt.fraud_count + row.fraud_count;
+      opt.tcpa_count = opt.tcpa_count + row.tcpa_count;
+      opt.spam_count++
+      if (!opt.first_fraud_on && row.first_fraud_on) {
+        opt.first_fraud_on = row.first_fraud_on;
+      }
+      if (!opt.first_tcpa_on && row.first_tcpa_on) {
+        opt.first_tcpa_on = row.first_tcpa_on;
+      }
+
+      if (row.last_fraud_on) {
+        opt.last_fraud_on = opt.last_fraud_on ? getLastDate(opt.last_fraud_on, row.last_fraud_on) : row.last_fraud_on;
+      }
+      if (row.last_tcpa_on) {
+        opt.last_tcpa_on = opt.last_tcpa_on ? getLastDate(opt.last_tcpa_on, row.last_tcpa_on) : row.last_tcpa_on;
+      }
+    } else {
+      arr[row.number] = row;
+    }
+    //    await logs.update(({ records }) => { records[fn] = Object.keys(arr).length; });
+    console.log(`Processing ${fn}  ${row.number} , total ${Object.keys(arr).length}/${rs}`);
+  }
+
+  return arr;
+}
 
 
+let getLastDate = (a, b) => {
+  let na = new Date(a), nb = new Date(b);
+  return na > nb ? na : nb;
+}
+let getFristDate = (a, b) => {
+  let na = new Date(a), nb = new Date(b);
+  return na < nb ? na : nb;
+}
 
 emitter.on('syncdb', async (data) => {
-  const sql = postgres({ host, port, user, password, database });
-  for (let r of Object.values(data.rows)) {
-    console.log('>>>>>>>>>>', data.fn)
-    console.log(r)
-    // await sql`insert into public.spams ${sql(r, Object.keys(r))}`.execute();
-  }
+  console.log('syncdb', data.rows.length)
+  await logs.write();
 })
 //
 let parseCsv2PG = (fn, callback) => {
-  const rows = new Low(new Memory(), { records: [] });
+  let rows = [];
   createReadStream(`${join(config.path.watchdir, fn)}`)
     .pipe(csv.parse({ headers: true }))
     .on('error', error => callback(error, null))
@@ -53,45 +90,26 @@ let parseCsv2PG = (fn, callback) => {
         r.last_spam_on = cdate;
         r.spam_count = 1;
         r.created_on = cdate;
-        rows.data.records.push(r)
+        rows.push(r);
       }
     })
     .on('end', async rs => {
-      const recordb = new Low(new Memory(), { records: {} });
-      await rows.read();
-      await recordb.read();
-      await cursor.write();
-
-      let _rows = rows.data.records;
-      let _cursor = cursor.data.records;
-      console.log(_cursor)
-      console.log(`${fn} has ${rows.data.records.length} rows, still has ${_rows.length - (_cursor[fn] || 0)} rows to process`);
-
-      for (const _rrow of _rows.slice(_cursor[fn] ?? 0)) {
-        if (has(recordb.data.records, _rrow.number)) {
-          let _drow = recordb.data.records[_rrow.number];
-          unset(_rrow, 'first_spam_on');
-          unset(_rrow, 'created_on');
-          _drow.first_fraud_on ?? unset(_rrow, 'first_fraud_on');
-          _drow.first_tcpa_on ?? unset(_rrow, 'first_tcpa_on');
-          _rrow.fraud_count = _drow.fraud_count + _rrow.fraud_count;
-          _rrow.tcpa_count = _drow.tcpa_count + _rrow.tcpa_count;
-          _rrow.spam_count = _drow.spam_count + _rrow.spam_count;
-          await recordb.update(({ records }) => {
-            records[_rrow.number] = Object.assign(_drow, _rrow);
-          });
-        } else {
-          await recordb.update(({ records }) => { records[_rrow.number] = _rrow; });
-        }
-        cursor.update(({ records }) => {
-          records[fn] = records[fn] ? records[fn] + 1 : 1;
-          console.log(`Processing ${fn}  ${_rrow.number} , total ${records[fn]}/${rs}`);
-        });
+      await logs.read();
+      let log = logs.data.records;
+      let arr = {};
+      if (log[fn]) {
+        rows = rows.slice(log[fn])
       }
-      await recordb.write();
-      await cursor.write();
-      emitter.emit('syncdb', { fn, rows: recordb.data.records });
-      callback(null, `${fn}:${rs}`);
+      console.log(`${fn} has ${rows.length} rows to process`);
+      worker.exec(calculate, [rows, fn, rs, logs]).then((result) => {
+        emitter.emit('syncdb', { rows: arr });
+        callback(null, `${fn}:${rs}`);
+      }).catch((error) => {
+        console.log(error);
+        callback(null, `${fn}:${rs}`);
+      }).then(() => {
+        worker.terminate();
+      });
     });
 }
 //
