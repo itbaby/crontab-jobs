@@ -19,35 +19,25 @@ const emitter = mitt();
 const config = parse(readFileSync("./config/config_basic.ini", "utf-8"));
 const { host, port, user, password, database } = config.database;
 
-function calculate(rows, fn, rs, logs) {
-  let arr = {};
-  for (let row of rows) {
-    let opt = arr[row.number];
-    if (opt) {
-      opt.fraud_count = opt.fraud_count + row.fraud_count;
-      opt.tcpa_count = opt.tcpa_count + row.tcpa_count;
-      opt.spam_count++
-      if (!opt.first_fraud_on && row.first_fraud_on) {
-        opt.first_fraud_on = row.first_fraud_on;
-      }
-      if (!opt.first_tcpa_on && row.first_tcpa_on) {
-        opt.first_tcpa_on = row.first_tcpa_on;
-      }
-
-      if (row.last_fraud_on) {
-        opt.last_fraud_on = opt.last_fraud_on ? getLastDate(opt.last_fraud_on, row.last_fraud_on) : row.last_fraud_on;
-      }
-      if (row.last_tcpa_on) {
-        opt.last_tcpa_on = opt.last_tcpa_on ? getLastDate(opt.last_tcpa_on, row.last_tcpa_on) : row.last_tcpa_on;
-      }
-    } else {
-      arr[row.number] = row;
-    }
-    //    await logs.update(({ records }) => { records[fn] = Object.keys(arr).length; });
-    console.log(`Processing ${fn}  ${row.number} , total ${Object.keys(arr).length}/${rs}`);
+function calculate(row, opt) {
+  opt.fraud_count = opt.fraud_count + row.fraud_count;
+  opt.tcpa_count = opt.tcpa_count + row.tcpa_count;
+  opt.spam_count++
+  if (!opt.first_fraud_on && row.first_fraud_on) {
+    opt.first_fraud_on = row.first_fraud_on;
+  }
+  if (!opt.first_tcpa_on && row.first_tcpa_on) {
+    opt.first_tcpa_on = row.first_tcpa_on;
   }
 
-  return arr;
+  if (row.last_fraud_on) {
+    opt.last_fraud_on = opt.last_fraud_on ? getLastDate(opt.last_fraud_on, row.last_fraud_on) : row.last_fraud_on;
+  }
+  if (row.last_tcpa_on) {
+    opt.last_tcpa_on = opt.last_tcpa_on ? getLastDate(opt.last_tcpa_on, row.last_tcpa_on) : row.last_tcpa_on;
+  }
+
+  return opt;
 }
 
 
@@ -101,15 +91,17 @@ let parseCsv2PG = (fn, callback) => {
         rows = rows.slice(log[fn])
       }
       console.log(`${fn} has ${rows.length} rows to process`);
-      worker.exec(calculate, [rows, fn, rs, logs]).then((result) => {
-        emitter.emit('syncdb', { rows: arr });
-        callback(null, `${fn}:${rs}`);
-      }).catch((error) => {
-        console.log(error);
-        callback(null, `${fn}:${rs}`);
-      }).then(() => {
-        worker.terminate();
-      });
+      for (let row of rows) {
+        let opt = arr[row.number];
+        if (opt) {
+          arr[row.number] = await worker.exec(calculate, [rows, opt]);
+        } else {
+          arr[row.number] = row;
+        }
+        await logs.update(({ records }) => { records[fn] = Object.keys(arr).length; });
+        console.log(`Processing ${fn}  ${row.number} , total ${Object.keys(arr).length}/${rs}`);
+      }
+      callback(null, `${fn}:${rs}`);
     });
 }
 //
