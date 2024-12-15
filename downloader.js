@@ -11,5 +11,8 @@ urls.map(url => {
   downloader.on('error', (err) => {
     console.error(err);
   })
+  downloader.on('progress', (progress) => {
+    console.log(`${progress.name}, ${progress.progress.toFixed(2)}%, ${progress.speed} KB/s ...`);
+  })
   downloader.start();
 })

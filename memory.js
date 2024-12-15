@@ -1,4 +1,3 @@
-import mitt from 'mitt';
 import { join } from "node:path";
 import { createReadStream, readFileSync } from "node:fs";
 import walk from "walk";
@@ -6,18 +5,23 @@ import { mapLimit } from "async";
 import { parse } from "ini";
 import * as csv from 'fast-csv';
 import postgres from 'postgres'
-import { has, unset, find } from "lodash-es";
-import { Low, Memory } from 'lowdb';
-import { JSONFile } from 'lowdb/node';
-import { pool } from 'workerpool';
+import { getLock } from 'p-lock';
+import Emittery from 'emittery';
 import { parse as parseDate, format } from 'date-fns';
-const logs = new Low(new JSONFile(`logs.json`), { records: {} });
 
-const worker = pool();
-
-const emitter = mitt();
+const emitter = new Emittery();
 const config = parse(readFileSync("./config/config_basic.ini", "utf-8"));
 const { host, port, user, password, database } = config.database;
+
+
+import { open } from 'lmdb';
+
+let calcdb = open({
+  path: './db',
+  compress: true
+})
+
+const lock = getLock();
 
 function calculate(row, opt) {
   opt.fraud_count = opt.fraud_count + row.fraud_count;
@@ -29,12 +33,14 @@ function calculate(row, opt) {
   if (!opt.first_tcpa_on && row.first_tcpa_on) {
     opt.first_tcpa_on = row.first_tcpa_on;
   }
-
   if (row.last_fraud_on) {
     opt.last_fraud_on = opt.last_fraud_on ? getLastDate(opt.last_fraud_on, row.last_fraud_on) : row.last_fraud_on;
   }
   if (row.last_tcpa_on) {
     opt.last_tcpa_on = opt.last_tcpa_on ? getLastDate(opt.last_tcpa_on, row.last_tcpa_on) : row.last_tcpa_on;
+  }
+  if (row.last_spam_on) {
+    opt.last_spam_on = opt.last_spam_on ? getLastDate(opt.last_spam_on, row.last_spam_on) : row.last_spam_on;
   }
 
   return opt;
@@ -43,28 +49,43 @@ function calculate(row, opt) {
 
 let getLastDate = (a, b) => {
   let na = new Date(a), nb = new Date(b);
-  return na > nb ? na : nb;
+  return na > nb ? format(na, 'yyyy-MM-dd') : format(nb, 'yyyy-MM-dd');
 }
 let getFristDate = (a, b) => {
   let na = new Date(a), nb = new Date(b);
-  return na < nb ? na : nb;
+  return na < nb ? format(na, 'yyyy-MM-dd') : format(nb, 'yyyy-MM-dd');
 }
 
+let counter = {};
 emitter.on('syncdb', async (data) => {
-  console.log('syncdb', data.rows.length)
-  await logs.write();
+  let { fn, r } = data;
+  let o = calcdb.get(r.number);
+  if (o) {
+    calcdb.putSync(r.number, calculate(r, o));
+  } else {
+    calcdb.putSync(r.number, r);
+  }
+  emitter.emit('log', { fn, r });
 })
+emitter.on('log', (data) => {
+  let { fn, r } = data;
+  lock('lock').then((release) => {
+    counter[fn]++;
+    console.log(`${fn} processed ${counter[fn]}, ${r.number}`)
+    release();
+  })
+})
+
 //
-let parseCsv2PG = (fn, callback) => {
-  let rows = [];
+let processing = (fn, callback) => {
+  counter[fn] = 0;
+  let cdate = format(parseDate(fn.match(/\d{8}/)[0], 'yyyyMMdd', new Date()), 'yyyy-MM-dd');
   createReadStream(`${join(config.path.watchdir, fn)}`)
     .pipe(csv.parse({ headers: true }))
     .on('error', error => callback(error, null))
     .on('data', row => {
       let { SpamScore, FraudProbability, TCPAFraudProbability } = row;
-      let cdate = format(parseDate(fn.match(/\d{8}/)[0], 'yyyyMMdd', new Date()), 'yyyy-MM-dd');
       let r = { number: row['Number'], spam_count: 0, fraud_count: 0, tcpa_count: 0 };
-
       if (FraudProbability > 0) {
         r.first_fraud_on = cdate;
         r.last_fraud_on = cdate;
@@ -80,27 +101,11 @@ let parseCsv2PG = (fn, callback) => {
         r.last_spam_on = cdate;
         r.spam_count = 1;
         r.created_on = cdate;
-        rows.push(r);
+        emitter.emit('syncdb', { fn, r });
       }
     })
     .on('end', async rs => {
-      await logs.read();
-      let log = logs.data.records;
-      let arr = {};
-      if (log[fn]) {
-        rows = rows.slice(log[fn])
-      }
-      console.log(`${fn} has ${rows.length} rows to process`);
-      for (let row of rows) {
-        let opt = arr[row.number];
-        if (opt) {
-          arr[row.number] = await worker.exec(calculate, [rows, opt]);
-        } else {
-          arr[row.number] = row;
-        }
-        await logs.update(({ records }) => { records[fn] = Object.keys(arr).length; });
-        console.log(`Processing ${fn}  ${row.number} , total ${Object.keys(arr).length}/${rs}`);
-      }
+      console.log(`${fn} processed ${rs} records`);
       callback(null, `${fn}:${rs}`);
     });
 }
@@ -109,6 +114,8 @@ let parseCsv2PG = (fn, callback) => {
 
 
 let files = [];
+console.log('start app, pls wait...');
+console.time('analysis work done in');
 const walker = walk.walk(config.path.watchdir);
 let handler = async (_root, stats, next) => {
   files.push(stats.name)
@@ -120,10 +127,14 @@ walker.on("end", () => {
   files = files.sort((a, b) => {
     return parseInt(a.match(/\d+/) || '0') - parseInt(b.match(/\d+/) || '0');
   })
-  mapLimit(files, 2, parseCsv2PG, async (err, result) => {
-    // const sql = postgres({ host, port, user, password, database });
-    // for (const r of Object.values(recordb.data.records)) { await sql`insert into public.spams ${sql(r, Object.keys(r))}`; }
-    console.log(err, err ?? 'all set')
+  mapLimit(files, 2, processing, async (err, result) => {
+    console.timeEnd('analysis work done in')
+    console.log('start populate data...');
+    const sql = postgres({ host, port, user, password, database });
+    for (let v of calcdb.getValues()) {
+      await sql` insert into public.spams ${sql(v)} `;
+    }
+    calcdb.close();
     process.exit(0);
   });
 })
