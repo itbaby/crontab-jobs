@@ -1,21 +1,54 @@
-import { join } from "node:path";
+"use strict";
+import pgk from 'pg';
+import axios from 'axios';
 import { parse } from "ini";
 import postgres from 'postgres';
 import * as csv from 'fast-csv';
-import { emptyDir } from 'fs-extra';
-import { createReadStream, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { QueryIterablePool } from 'pg-iterator';
+
+import { createReadStream, readFileSync, createWriteStream } from "node:fs";
 import { format, subDays } from 'date-fns';
 import { DownloaderHelper } from "node-downloader-helper";
+
+const { Pool } = pgk;
 const config = parse(readFileSync("./config/config_basic.ini", "utf-8"));
 const { host, port, user, password, database } = config.database;
 
-console.log('remove old files....')
-await emptyDir(config.path.downloadDir);
 const sql = postgres({ host, port, user, password, database });
 let _date = format(subDays(new Date(), 1), 'yyyyMMdd');
 let cdate = format(subDays(new Date(), 1), 'yyyy-MM-dd');
 let today = `FULL_spam-number-file_${_date}.csv`
+let dump = `Youmail_Aggregate_Report${_date}.csv`
+async function msg(text) {
+  try {
+    const response = await axios.post(config.path.webhookurl, { text }, { headers: { 'Content-Type': 'application/json', } });
+    console.log(`Log posted successfully: ${response.statusText}`);
+  } catch (err) {
+    console.error('Error posting log to Mattermost:', err.message);
+  } finally {
+    process.exit(0)
+  }
+}
 
+async function backupdb() {
+  console.log('start to backup data..., due to records too big , it will cost time and disk to bakup');
+  const ws = createWriteStream(`${join(config.path.watchdir, dump)}`);
+  const pool = new Pool({ host, port, user, password, database });
+  const stream = csv.format({ headers: true, quote: ',' });
+  try {
+    const query = new QueryIterablePool(pool);
+    const result = query.query(`SELECT * FROM public.spams`);
+    for await (const u of result) {
+      console.log(JSON.stringify(u));
+      stream.pipe(ws);
+      stream.write(u);
+    }
+  } finally {
+    stream.end();
+    pool.end();
+  }
+}
 
 function calculate(row, opt) {
   opt.fraud_count = opt.fraud_count + row.fraud_count;
@@ -74,6 +107,7 @@ let processing = () => {
         r.spam_count = 1;
         r.created_on = cdate;
         const has = await sql`select * from public.spams where number = ${r.number}`;
+        console.log(`processing ${r.number}`)
         if (has.length == 0) {
           await sql` insert into public.spams ${sql(r)} `;
         } else {
@@ -83,7 +117,9 @@ let processing = () => {
       }
     })
     .on('end', async rs => {
+      await backupdb();
       console.log(`finished parsing ${today} , and update db with ${rs} records already`)
+      msg(`You mail file ${today} is successfully processed with ${rs} lines.  Dump full result to ${join(config.path.watchdir, dump)}`);
     });
 }
 
