@@ -11,7 +11,7 @@ function getDatesBetween(start, end) {
 
   while (currentDate <= endDate) {
 
-    dates.push(`https://youmail.s3.us-east-1.amazonaws.com/FULL_spam-number-file_${currentDate.toISOString().substring(0, 10).replace(/-/g, '')}.csv`);
+    dates.push(`https://xxx_${currentDate.toISOString().substring(0, 10).replace(/-/g, '')}.csv`);
     currentDate.setDate(currentDate.getDate() + 1);
   }
 

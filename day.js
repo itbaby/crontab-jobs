@@ -123,7 +123,7 @@ let processing = () => {
     });
 }
 
-let url = `https://youmail.s3.us-east-1.amazonaws.com/${today}`;
+let url = `https://xxx/${today}`;
 console.log(`start downling file : ${url}`);
 
 const downloader = new DownloaderHelper(url, config.path.downloadDir, { override: true, retry: { maxRetries: 10, delay: 1000 }, removeOnFail: true, resumeOnIncomplete: true, resumeOnIncompleteMaxRetry: 10 });
